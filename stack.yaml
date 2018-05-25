@@ -23,7 +23,7 @@ user-message: ! 'Warning (added by new or init): Specified resolver could not sa
 # resolver:
 #  name: custom-snapshot
 #  location: "./custom-snapshot.yaml"
-resolver: lts-3.22
+resolver: lts-8.17
 
 # User packages to be built.
 # Various formats can be used as shown in the example below.
@@ -49,13 +49,12 @@ packages:
 # (e.g., acme-missiles-0.3)
 extra-deps:
 - either-4.3.4.1
-- servant-0.4.0
-- servant-server-0.4.0
 - string-conversions-0.3.0.3
-- wai-3.0.3.0
-- wai-app-static-3.0.1.1
-- warp-3.0.13.1
-
+# - wai-3.0.3.0
+# - wai-app-static-3.0.1.1
+# - warp-3.0.13.1
+- servant-0.10
+- servant-server-0.10
 # Override default flag values for local packages and extra-deps
 flags: {}
 
