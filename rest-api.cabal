@@ -27,6 +27,7 @@ executable rest-api
                        warp,
                        http-types,
                        servant-server,
+                       servant-checked-exceptions,
                        persistent,
                        persistent-sqlite,
                        persistent-template,
