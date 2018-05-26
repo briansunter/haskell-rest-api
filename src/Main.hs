@@ -1,7 +1,7 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE DataKinds                  #-}
+{-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE DeriveGeneric              #-}
+{-# LANGUAGE TypeOperators              #-}
 {-# LANGUAGE EmptyDataDecls             #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GADTs                      #-}
@@ -10,8 +10,8 @@
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE QuasiQuotes                #-}
 {-# LANGUAGE TemplateHaskell            #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE FlexibleInstances          #-}
+{-# LANGUAGE InstanceSigs               #-}
 
 import Data.Aeson
 import Control.Monad.Trans.Reader
@@ -75,11 +75,21 @@ instance ToJSON (NotFoundError Deck) where
   toJSON :: (NotFoundError Deck) -> Value
   toJSON (NotFoundError deckId) = toJSON $ "no Deck found with id: " ++ show deckId
 
+allDecksH :: Handler [(Entity Deck)]
+allDecksH = liftIO getDecks
+
+postDecksH :: DeckPost -> Handler (Entity Deck)
+postDecksH deck = liftIO $ insertDeck deck
+
+getDeckByIdH :: Int64 -> Handler (Envelope '[(NotFoundError Deck)] (Entity Deck))
+getDeckByIdH deckId = liftIO $ do
+  mdeck <- getDeckById deckId
+  case mdeck of
+    Nothing -> pureErrEnvelope ((NotFoundError deckId) :: (NotFoundError Deck))
+    Just deck -> pureSuccEnvelope deck
+
 server :: ServerT FlashCardAPI Handler
 server = allDecksH  :<|> postDecksH :<|> getDeckByIdH
-  where allDecksH = liftIO getDecks
-        postDecksH deck = liftIO $ insertDeck deck
-        getDeckByIdH deckId = liftIO $ getDeckById deckId >>= either pureErrEnvelope pureSuccEnvelope
 
 asSqlBackendReader :: ReaderT SqlBackend m a -> ReaderT SqlBackend m a
 asSqlBackendReader = id
@@ -101,15 +111,12 @@ deckPostToDeck (DeckPost name description ) = do
   currentTime <- getCurrentTime
   return $ Deck name description currentTime
 
-getDeckById :: Int64 -> IO (Either (NotFoundError Deck) (Entity Deck))
+getDeckById :: Int64 -> IO (Maybe (Entity Deck))
 getDeckById i = do
   runSqlite "flashcards.sqlite" . asSqlBackendReader $ do
     let key = toSqlKey i
     mdeck <- get key
-    let mdeckEntity = (fmap (Entity key) mdeck)
-    return $ case mdeckEntity of
-      Nothing -> Left (NotFoundError i)
-      Just deck -> Right deck
+    return (fmap (Entity key) mdeck)
 
 flashCardAPI :: Proxy FlashCardAPI
 flashCardAPI = Proxy
