@@ -63,29 +63,23 @@ instance FromJSON DeckPost where
 
 type FlashCardAPI = "decks" :> Get '[JSON] [Entity Deck]
                   :<|> "decks" :> ReqBody '[JSON] DeckPost :> Post '[JSON] (Entity Deck)
-                  :<|> "decks" :> Capture "id" Int64 :> Throws DeckNotFoundError :> Get '[JSON] (Entity Deck)
+                  :<|> "decks" :> Capture "id" Int64 :> Throws (NotFoundError Deck) :> Get '[JSON] (Entity Deck)
 
-data DeckNotFoundError = DeckNotFoundError deriving (Eq, Read, Show)
+data NotFoundError a = NotFoundError Int64 deriving (Eq, Read, Show)
 
-instance ToJSON DeckNotFoundError where
-  toJSON :: DeckNotFoundError -> Value
-  toJSON = toJSON . show
-
-instance ErrStatus DeckNotFoundError where
-  toErrStatus :: DeckNotFoundError -> Status
+instance ErrStatus (NotFoundError a) where
+  toErrStatus :: NotFoundError a -> Status
   toErrStatus _ = status404
 
-getDeckByIdH :: Int64 -> Handler (Envelope '[DeckNotFoundError] (Entity Deck))
-getDeckByIdH deckId = do
-  mDeck <- liftIO $ getDeckById deckId
-  case mDeck of
-    Nothing -> pureErrEnvelope DeckNotFoundError
-    Just deck -> pureSuccEnvelope deck
+instance ToJSON (NotFoundError Deck) where
+  toJSON :: (NotFoundError Deck) -> Value
+  toJSON (NotFoundError deckId) = toJSON $ "no Deck found with id: " ++ show deckId
 
 server :: ServerT FlashCardAPI Handler
 server = allDecksH  :<|> postDecksH :<|> getDeckByIdH
   where allDecksH = liftIO getDecks
         postDecksH deck = liftIO $ insertDeck deck
+        getDeckByIdH deckId = liftIO $ getDeckById deckId >>= either pureErrEnvelope pureSuccEnvelope
 
 asSqlBackendReader :: ReaderT SqlBackend m a -> ReaderT SqlBackend m a
 asSqlBackendReader = id
@@ -107,12 +101,15 @@ deckPostToDeck (DeckPost name description ) = do
   currentTime <- getCurrentTime
   return $ Deck name description currentTime
 
-getDeckById :: Int64 -> IO (Maybe (Entity Deck))
+getDeckById :: Int64 -> IO (Either (NotFoundError Deck) (Entity Deck))
 getDeckById i = do
   runSqlite "flashcards.sqlite" . asSqlBackendReader $ do
-    let key = toSqlKey i :: Key Deck
+    let key = toSqlKey i
     mdeck <- get key
-    return $ fmap (Entity key) mdeck
+    let mdeckEntity = (fmap (Entity key) mdeck)
+    return $ case mdeckEntity of
+      Nothing -> Left (NotFoundError i)
+      Just deck -> Right deck
 
 flashCardAPI :: Proxy FlashCardAPI
 flashCardAPI = Proxy
