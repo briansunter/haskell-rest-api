@@ -1,7 +1,7 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE DataKinds                  #-}
+{-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE DeriveGeneric              #-}
+{-# LANGUAGE TypeOperators              #-}
 {-# LANGUAGE EmptyDataDecls             #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GADTs                      #-}
@@ -10,9 +10,11 @@
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE QuasiQuotes                #-}
 {-# LANGUAGE TemplateHaskell            #-}
-{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleInstances          #-}
+{-# LANGUAGE InstanceSigs               #-}
 
 import Data.Aeson
+import Control.Monad.Trans.Reader
 import Control.Monad.Trans.Resource
 import Data.Text (Text)
 import Data.Time.Calendar
@@ -27,10 +29,12 @@ import Data.Time.Clock (UTCTime,getCurrentTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime,utcTimeToPOSIXSeconds)
 import Database.Persist
 import Database.Persist.Sqlite (runSqlite,runMigration,SqlPersist,toSqlKey,Key(..))
+import Database.Persist.Sql(SqlBackend)
 import Database.Persist.TH (mkPersist, mkMigrate, persistLowerCase, share, sqlSettings)
 import Control.Monad.IO.Class
 import Data.Maybe (isJust,fromJust,Maybe)
 import GHC.Int (Int64(..))
+import Servant.Checked.Exceptions
 
 share [mkPersist sqlSettings, mkMigrate "migrateTables"] [persistLowerCase|
 Deck json
@@ -59,21 +63,44 @@ instance FromJSON DeckPost where
 
 type FlashCardAPI = "decks" :> Get '[JSON] [Entity Deck]
                   :<|> "decks" :> ReqBody '[JSON] DeckPost :> Post '[JSON] (Entity Deck)
-                  :<|> "decks" :> Capture "id" Int64 :> Get '[JSON] (Entity Deck)
+                  :<|> "decks" :> Capture "id" Int64 :> Throws (NotFoundError Deck) :> Get '[JSON] (Entity Deck)
 
-server :: Server FlashCardAPI
+data NotFoundError a = NotFoundError Int64 deriving (Eq, Read, Show)
+
+instance ErrStatus (NotFoundError a) where
+  toErrStatus :: NotFoundError a -> Status
+  toErrStatus _ = status404
+
+instance ToJSON (NotFoundError Deck) where
+  toJSON :: (NotFoundError Deck) -> Value
+  toJSON (NotFoundError deckId) = toJSON $ "no Deck found with id: " ++ show deckId
+
+allDecksH :: Handler [(Entity Deck)]
+allDecksH = liftIO getDecks
+
+postDecksH :: DeckPost -> Handler (Entity Deck)
+postDecksH deck = liftIO $ insertDeck deck
+
+getDeckByIdH :: Int64 -> Handler (Envelope '[(NotFoundError Deck)] (Entity Deck))
+getDeckByIdH deckId = liftIO $ do
+  mdeck <- getDeckById deckId
+  case mdeck of
+    Nothing -> pureErrEnvelope ((NotFoundError deckId) :: (NotFoundError Deck))
+    Just deck -> pureSuccEnvelope deck
+
+server :: ServerT FlashCardAPI Handler
 server = allDecksH  :<|> postDecksH :<|> getDeckByIdH
-  where allDecksH = liftIO getDecks
-        postDecksH deck = liftIO $ insertDeck deck
-        getDeckByIdH deckId = liftIO $ getDeckById deckId
+
+asSqlBackendReader :: ReaderT SqlBackend m a -> ReaderT SqlBackend m a
+asSqlBackendReader = id
 
 getDecks :: IO [Entity Deck]
-getDecks =  runSqlite "flashcards.sqlite" $ do
+getDecks =  runSqlite "flashcards.sqlite" . asSqlBackendReader $ do
   decks <- selectList [] [Asc DeckCreatedAt]
   return decks
 
 insertDeck :: DeckPost -> IO (Entity Deck)
-insertDeck deckPost = runSqlite "flashcards.sqlite" $ do
+insertDeck deckPost = runSqlite "flashcards.sqlite" . asSqlBackendReader $ do
   createdNowDeck <-  liftIO $ deckPostToDeck deckPost
   insertedDeckId <- insert createdNowDeck
   insertedDeck <- getJust insertedDeckId
@@ -84,12 +111,12 @@ deckPostToDeck (DeckPost name description ) = do
   currentTime <- getCurrentTime
   return $ Deck name description currentTime
 
-getDeckById :: Int64 -> IO (Entity Deck)
+getDeckById :: Int64 -> IO (Maybe (Entity Deck))
 getDeckById i = do
-  runSqlite "flashcards.sqlite" $ do
-    let key = toSqlKey i :: Key Deck
-    deck <- get key
-    return $ (Entity key (fromJust deck))
+  runSqlite "flashcards.sqlite" . asSqlBackendReader $ do
+    let key = toSqlKey i
+    mdeck <- get key
+    return (fmap (Entity key) mdeck)
 
 flashCardAPI :: Proxy FlashCardAPI
 flashCardAPI = Proxy
